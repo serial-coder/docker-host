@@ -1,6 +1,14 @@
 name: Build
 
-on: [push,]
+on: 
+  push:
+    branches:
+      - "*"
+    tags:
+      - "v*"
+
+env:
+  DOCKER_BUILDX_PLATFORM: linux/amd64,linux/arm/v7,linux/arm64
 
 jobs:
 
@@ -13,13 +21,13 @@ jobs:
 
     - name: Add GITHUB Environment Variables
       run: |
-        echo ::set-env name=GITHUB_REF_NAME::"${GITHUB_REF#refs/*/}"
+        echo "GITHUB_REF_NAME=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
         if [[ "${GITHUB_REF}" = refs/heads/* ]]
         then 
-          echo ::set-env name=GITHUB_BRANCH::"${GITHUB_REF#refs/heads/}"
+          echo "GITHUB_BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
         elif [[ "${GITHUB_REF}" = refs/tags/* ]]
         then 
-          echo ::set-env name=GITHUB_TAG::"${GITHUB_REF#refs/tags/}"
+          echo "GITHUB_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
         fi
     
     - name: lint dockerfile
@@ -39,7 +47,7 @@ jobs:
         docker buildx create --name builder --use
         docker buildx inspect --bootstrap
         docker buildx build . \
-          --platform linux/amd64,linux/arm/v7,linux/arm64
+          --platform "${{ env.DOCKER_BUILDX_PLATFORM }}"
     
     - name: login to docker hub
       if: ${{ env.GITHUB_BRANCH == 'master' || startsWith(env.GITHUB_TAG, 'v')  }}
@@ -52,19 +60,21 @@ jobs:
       env:
         DOCKER_CLI_EXPERIMENTAL: enabled
       run: |
-        DOCKER_REPOSITORY="${GITHUB_REPOSITORY}"
-        DOCKER_TAG=$(
-          if [ "${GITHUB_BRANCH}" ]
-          then 
-            if [[ "${GITHUB_BRANCH}" = 'master' ]]
-            then echo "latest"
-            else echo "${GITHUB_BRANCH/\//-}"
-            fi
-          elif [[ "$GITHUB_TAG" = v* ]]
-          then echo ${GITHUB_TAG#v}
-          fi
-        )
-        echo "image tag: ${DOCKER_REPOSITORY}:${DOCKER_TAG}"
+        DOCKER_REPOSITORY="$GITHUB_REPOSITORY"
+        DOCKER_TAGS=()
+        
+        if [ "${GITHUB_BRANCH}" ]
+        then 
+          DOCKER_TAGS=(${GITHUB_BRANCH/\//-})
+        elif [[ "$GITHUB_TAG" = v* ]]
+        then 
+          VERSION=${GITHUB_TAG#v}
+          VERSION_PARTS=($(echo $VERSION | tr "." "\n"))
+          DOCKER_TAGS=(latest $VERSION ${VERSION_PARTS[0]})
+        fi
+        
+        echo "image tag(s):"
+        printf "  ${DOCKER_REPOSITORY}:%s\n" "${DOCKER_TAGS[@]}"
         docker buildx build --push . \
-          --platform linux/amd64,linux/arm/v7,linux/arm64 \
-          --tag ${DOCKER_REPOSITORY}:${DOCKER_TAG}
+          --platform "${{ env.DOCKER_BUILDX_PLATFORM }}" \
+          ${DOCKER_TAGS[@]/#/--tag ${DOCKER_REPOSITORY}:}
